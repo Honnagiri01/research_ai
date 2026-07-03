@@ -18,3 +18,4 @@ fpdf2
 Markdown
 Pillow
 docx2txt
+langchain-text-splitters
