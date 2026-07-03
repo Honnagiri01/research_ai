@@ -19,6 +19,7 @@ from sentence_transformers import SentenceTransformer
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from fpdf import FPDF
 import markdown
+from openai import OpenAI
 
 # ==========================================
 # CONFIGURATION & PAGE SETUP
@@ -104,12 +105,40 @@ class VectorDB:
         results = [texts[i] for i in indices[0] if i < len(texts)]
         return results
 
-class MockLLM:
-    """Placeholder for external LLM API (OpenAI/Anthropic) to ensure self-containment"""
+class RealLLM:
+    """Connects to OpenAI API for Real Inference"""
     @staticmethod
     def generate(prompt, context=""):
-        # In a production app, this connects to an LLM provider.
-        return f"This is an AI-generated response based on the context.\n\nContext utilized: {context[:200]}...\n\n(Note: Connect your LLM API key here for real inference)."
+        try:
+            # Securely fetch the key from Streamlit's secrets
+            api_key = st.secrets.get("OPENAI_API_KEY")
+            if not api_key:
+                return "⚠️ Error: OPENAI_API_KEY is not set in Streamlit Secrets. Please configure it in your Streamlit Cloud dashboard."
+
+            client = OpenAI(api_key=api_key)
+            
+            system_instruction = (
+                "You are an expert academic researcher and thesis writer. "
+                "Use the provided context to generate comprehensive, highly detailed, "
+                "and academically rigorous content. Do not hallucinate citations."
+            )
+            
+            user_message = f"Context:\n{context}\n\nTask:\n{prompt}"
+            
+            response = client.chat.completions.create(
+                model="gpt-4o", # Change to gpt-4-turbo or gpt-3.5-turbo if needed
+                messages=[
+                    {"role": "system", "content": system_instruction},
+                    {"role": "user", "content": user_message}
+                ],
+                temperature=0.3, # Low temperature for academic accuracy
+                max_tokens=4000  # Maximize output length per section
+            )
+            
+            return response.choices[0].message.content
+            
+        except Exception as e:
+            return f"⚠️ LLM Generation Error: {str(e)}"
 
 # ==========================================
 # DOCUMENT PROCESSING ENGINE
@@ -128,7 +157,6 @@ class DocumentProcessor:
             page = doc[page_num]
             text += page.get_text("text") + "\n"
             
-            # Simplified OCR fallback
             if self.ocr_enabled and len(text.strip()) < 50:
                 pix = page.get_pixmap()
                 img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
@@ -190,19 +218,28 @@ class DocumentProcessor:
 # ==========================================
 class ExportManager:
     @staticmethod
-    def generate_pdf(text, filename="output.pdf"):
-        pdf = FPDF()
-        pdf.add_page()
-        pdf.set_font("Arial", size=12)
-        # Handle encoding issues for basic PDF generation
-        clean_text = text.encode('latin-1', 'replace').decode('latin-1')
-        pdf.multi_cell(0, 10, clean_text)
-        return pdf.output(dest="S").encode("latin-1")
-
-    @staticmethod
-    def generate_docx(text):
+    def generate_docx(chapters_dict):
+        """
+        Takes a dictionary of { "Chapter Title": "Content" }
+        and builds a massive, properly formatted DOCX file.
+        """
         doc = docx.Document()
-        doc.add_paragraph(text)
+        
+        # Add a Title Page
+        title = doc.add_heading('Research Thesis', 0)
+        title.alignment = 1 # Center align
+        doc.add_page_break()
+        
+        # Stitch all generated chapters
+        for chapter_title, content in chapters_dict.items():
+            doc.add_heading(chapter_title, level=1)
+            
+            # Clean up markdown formatting for word
+            clean_content = content.replace('**', '').replace('##', '')
+            
+            doc.add_paragraph(clean_content)
+            doc.add_page_break() # Ensure each chapter starts on a new page
+            
         io_stream = io.BytesIO()
         doc.save(io_stream)
         return io_stream.getvalue()
@@ -246,7 +283,7 @@ def page_home():
     col1, col2, col3 = st.columns(3)
     col1.metric("Supported Formats", "10+")
     col2.metric("Processing Engine", "Multi-modal RAG")
-    col3.metric("Output Formats", "PDF, DOCX, MD")
+    col3.metric("Output Formats", "DOCX, MD")
 
 def page_upload():
     st.title("Upload & Process Documents")
@@ -331,7 +368,7 @@ def page_chat():
                     query
                 )
                 context = "\n".join(context_chunks)
-                response = MockLLM.generate(query, context)
+                response = RealLLM.generate(query, context)
             else:
                 response = "Please upload and process documents first to enable RAG."
                 
@@ -355,7 +392,7 @@ def page_research_analysis():
         with st.spinner("Analyzing knowledge base..."):
             vdb = VectorDB()
             context = "\n".join(vdb.search(st.session_state.vector_index, st.session_state.text_chunks, selected_analysis, k=10))
-            result = MockLLM.generate(f"Generate a comprehensive analysis of the {selected_analysis} based on the documents.", context)
+            result = RealLLM.generate(f"Generate a comprehensive analysis of the {selected_analysis} based on the documents.", context)
             
             st.subheader(f"Generated {selected_analysis}")
             st.write(result)
@@ -381,27 +418,41 @@ def page_thesis_generator():
             return
             
         progress = st.progress(0)
-        thesis_content = "# Generated Thesis\n\n"
         
+        # Store chapters in a dictionary for massive DOCX generator
+        generated_chapters = {}
         chapters = ["Abstract", "Introduction", "Literature Review", "Methodology", "Results", "Conclusion"]
+        markdown_preview = "# Generated Thesis Preview\n\n"
         
         for i, chapter in enumerate(chapters):
-            st.text(f"Drafting {chapter}...")
-            # Simulate RAG retrieval for specific chapters
-            context = "Mock context for " + chapter
-            draft = MockLLM.generate(f"Write the {chapter} chapter of an academic thesis.", context)
-            thesis_content += f"## {chapter}\n{draft}\n\n"
+            st.text(f"Drafting {chapter}... (This may take a few minutes)")
+            
+            # 1. Retrieve specific context for this chapter
+            vdb = VectorDB()
+            context_chunks = vdb.search(st.session_state.vector_index, st.session_state.text_chunks, chapter, k=15)
+            context = "\n".join(context_chunks)
+            
+            # 2. Call the Real LLM
+            prompt = f"Write the {chapter} chapter of a comprehensive academic thesis. Ensure it is incredibly detailed, highly expansive, and academic in tone."
+            draft = RealLLM.generate(prompt, context)
+            
+            # 3. Store the output
+            generated_chapters[chapter] = draft
+            markdown_preview += f"## {chapter}\n{draft}\n\n"
             progress.progress((i + 1) / len(chapters))
             
         st.success("Thesis Generation Complete!")
         
-        st.text_area("Review Thesis Draft", thesis_content, height=400)
+        st.text_area("Review Thesis Draft", markdown_preview, height=400)
+        
+        # Generate the massive DOCX file
+        docx_file = ExportManager.generate_docx(generated_chapters)
         
         st.download_button(
-            label="Download as Markdown",
-            data=thesis_content,
-            file_name="Research_Thesis.md",
-            mime="text/markdown"
+            label="Download Complete Thesis (DOCX)",
+            data=docx_file,
+            file_name="Massive_Research_Thesis.docx",
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         )
 
 def page_literature_review():
@@ -469,7 +520,8 @@ def page_settings():
     with st.expander("AI & Output Settings", expanded=True):
         st.session_state.settings["citation_style"] = st.selectbox("Citation Style", ["IEEE", "APA", "MLA", "Chicago"], index=["IEEE", "APA", "MLA", "Chicago"].index(st.session_state.settings["citation_style"]))
         st.session_state.settings["internet_search"] = st.toggle("Enable Internet Search (Semantic Scholar / arXiv)", value=st.session_state.settings["internet_search"])
-        st.selectbox("LLM Provider (Mocked)", ["OpenAI (Mock)", "Anthropic (Mock)", "Local Llama (Mock)"])
+        st.selectbox("LLM Provider", ["OpenAI (GPT-4o)", "Anthropic (Claude)", "Local Llama"])
+        st.caption("⚠️ Ensure your API Keys are securely added to `Streamlit Secrets` in your cloud dashboard.")
 
     if st.button("Save Settings"):
         st.success("Settings updated successfully!")
