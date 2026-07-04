@@ -21,6 +21,7 @@ from sentence_transformers import SentenceTransformer
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 import markdown
 from google import genai
+from google.genai import errors
 
 # ==========================================
 # CONFIGURATION & PAGE SETUP
@@ -107,37 +108,48 @@ class VectorDB:
         return results
 
 class RealLLM:
-    """Connects to Google Gemini API for Free Tier Inference"""
+    """Connects to Google Gemini API for Free Tier Inference with Rate Limiting"""
     @staticmethod
     def generate(prompt, context=""):
-        try:
-            api_key = st.secrets.get("GEMINI_API_KEY")
-            if not api_key:
-                return "⚠️ Error: GEMINI_API_KEY is not set in Streamlit Secrets."
+        api_key = st.secrets.get("GEMINI_API_KEY")
+        if not api_key:
+            return "⚠️ Error: GEMINI_API_KEY is not set in Streamlit Secrets."
 
-            client = genai.Client(api_key=api_key)
-            
-            system_instruction = (
-                "You are an expert academic researcher and thesis writer. "
-                "Use the provided context to generate comprehensive, highly detailed, "
-                "and academically rigorous content. Do not hallucinate citations. "
-                "CRITICAL: When relevant, you MUST synthesize numerical data, parameters, or comparisons into clean Markdown tables. "
-                "When illustrating system architectures or logic flows, you MUST generate clear ASCII diagrams. "
-                "IMPORTANT: Keep ASCII diagrams COMPACT and VERTICAL (maximum 65 characters wide) so they fit on a standard document page."
-            )
-            
-            user_message = f"Context:\n{context}\n\nTask:\n{prompt}"
-            full_prompt = f"System: {system_instruction}\n\nUser: {user_message}"
-            
-            response = client.models.generate_content(
-                model='gemini-2.5-flash',
-                contents=full_prompt,
-            )
-            
-            return response.text
-            
-        except Exception as e:
-            return f"⚠️ LLM Generation Error: {str(e)}"
+        client = genai.Client(api_key=api_key)
+        
+        system_instruction = (
+            "You are an expert academic researcher and thesis writer. "
+            "Use the provided context to generate comprehensive, highly detailed, "
+            "and academically rigorous content. Do not hallucinate citations. "
+            "CRITICAL: When relevant, synthesize numerical data into clean Markdown tables. "
+            "CRITICAL FOR DIAGRAMS: When illustrating architectures or logic flows, generate ASCII diagrams. "
+            "You MUST draw diagrams strictly VERTICAL (top-to-bottom flow). NEVER place boxes side-by-side horizontally. "
+            "Keep diagrams strictly under 50 characters wide to prevent page wrapping."
+        )
+        
+        user_message = f"Context:\n{context}\n\nTask:\n{prompt}"
+        full_prompt = f"System: {system_instruction}\n\nUser: {user_message}"
+        
+        # Intelligent Retry Logic for 429 Errors (Free Tier Limits)
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                response = client.models.generate_content(
+                    model='gemini-2.5-flash',
+                    contents=full_prompt,
+                )
+                return response.text
+            except errors.APIError as e:
+                if e.code == 429 or "RESOURCE_EXHAUSTED" in str(e):
+                    if attempt < max_retries - 1:
+                        # Wait 60 seconds to let the free tier quota reset
+                        time.sleep(60)
+                        continue
+                return f"⚠️ LLM Generation Error: {str(e)}"
+            except Exception as e:
+                return f"⚠️ LLM Generation Error: {str(e)}"
+        
+        return "⚠️ LLM Generation Error: Max retries exceeded due to rate limits."
 
 # ==========================================
 # DOCUMENT PROCESSING ENGINE
@@ -242,9 +254,14 @@ class ExportManager:
                             p.paragraph_format.space_before = Pt(0)
                             p.paragraph_format.space_after = Pt(12)
                             p.paragraph_format.line_spacing = 1.0 
-                            run = p.add_run('\n'.join(code_block_content))
+                            
+                            # MAGIC HACK: Replace all standard spaces with non-breaking spaces (\u00A0)
+                            # This forces MS Word to treat the whole block as unbreakable, preventing wrapping.
+                            ascii_art = '\n'.join(code_block_content).replace(' ', '\u00A0')
+                            
+                            run = p.add_run(ascii_art)
                             run.font.name = 'Courier New'
-                            run.font.size = Pt(7) 
+                            run.font.size = Pt(7) # Kept small to fit on the page
                     continue
                 
                 if in_code_block:
@@ -304,8 +321,7 @@ class ExportManager:
     def generate_html_for_pdf(markdown_text):
         """
         Converts the markdown to a beautifully formatted HTML file.
-        Users can open this HTML in their browser and "Print to PDF", 
-        which preserves perfect tables and monospace ASCII diagrams.
+        Users can open this HTML in their browser and "Print to PDF".
         """
         html_body = markdown.markdown(markdown_text, extensions=['tables', 'fenced_code'])
         
@@ -478,7 +494,14 @@ def page_thesis_generator():
         generated_chapters = {}
         markdown_preview = ""
         
+        # Adding a warning so the user knows about the rate limit delays
+        st.warning("Note: Due to API rate limits, generation may automatically pause for 60 seconds between chapters if limits are hit. Please do not close the page.")
+        
         for i, chapter in enumerate(selected_chapters):
+            # Slow down the loop artificially to help prevent hitting the 15 Requests/Min quota too fast
+            if i > 0:
+                time.sleep(5) 
+            
             st.text(f"Drafting {chapter}... (Generating maximum length, this will take time)")
             
             vdb = VectorDB()
@@ -494,6 +517,11 @@ def page_thesis_generator():
                 "If describing algorithms, protocols, architectures, or system logic, explicitly generate a clear ASCII flowchart or diagram labeled as a Figure."
             )
             draft = RealLLM.generate(prompt, context)
+            
+            # Check if the LLM hit the max retries limit and aborted
+            if "Max retries exceeded" in draft:
+                st.error("Google Gemini API daily quota exhausted. Please try again tomorrow, or upgrade your Google AI Studio tier.")
+                break
             
             generated_chapters[chapter] = draft
             markdown_preview += f"# {chapter}\n{draft}\n\n"
