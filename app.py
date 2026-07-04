@@ -99,7 +99,7 @@ class VectorDB:
         Logger.log(f"FAISS index built with {len(texts)} vectors.", "SUCCESS")
         return index
         
-    def search(self, index, texts, query, k=10):
+    def search(self, index, texts, query, k=15):
         if index is None or not texts:
             return []
         query_vector = self.model.encode([query], convert_to_numpy=True)
@@ -108,7 +108,7 @@ class VectorDB:
         return results
 
 class RealLLM:
-    """Connects to Google Gemini API for Free Tier Inference with Rate Limiting"""
+    """Connects to Google Gemini API with Dynamic Smart Rate Limiting"""
     @staticmethod
     def generate(prompt, context=""):
         api_key = st.secrets.get("GEMINI_API_KEY")
@@ -131,7 +131,7 @@ class RealLLM:
         full_prompt = f"System: {system_instruction}\n\nUser: {user_message}"
         
         # Intelligent Retry Logic for 429 Errors (Free Tier Limits)
-        max_retries = 3
+        max_retries = 4
         for attempt in range(max_retries):
             try:
                 response = client.models.generate_content(
@@ -139,17 +139,20 @@ class RealLLM:
                     contents=full_prompt,
                 )
                 return response.text
-            except errors.APIError as e:
-                if e.code == 429 or "RESOURCE_EXHAUSTED" in str(e):
-                    if attempt < max_retries - 1:
-                        # Wait 60 seconds to let the free tier quota reset
-                        time.sleep(60)
-                        continue
-                return f"⚠️ LLM Generation Error: {str(e)}"
             except Exception as e:
-                return f"⚠️ LLM Generation Error: {str(e)}"
+                error_msg = str(e)
+                if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
+                    if attempt < max_retries - 1:
+                        # Dynamically parse the requested wait time from Google's error message
+                        match = re.search(r'retry in (\d+\.?\d*)s', error_msg)
+                        wait_time = float(match.group(1)) + 5 if match else 65
+                        
+                        st.toast(f"API Rate Limit hit. Pausing generation for {int(wait_time)} seconds to recover...")
+                        time.sleep(wait_time)
+                        continue
+                return f"⚠️ LLM Generation Error: {error_msg}"
         
-        return "⚠️ LLM Generation Error: Max retries exceeded due to rate limits."
+        return "⚠️ LLM Generation Error: Max retries exceeded due to rate limits. Please try again later."
 
 # ==========================================
 # DOCUMENT PROCESSING ENGINE
@@ -255,13 +258,11 @@ class ExportManager:
                             p.paragraph_format.space_after = Pt(12)
                             p.paragraph_format.line_spacing = 1.0 
                             
-                            # MAGIC HACK: Replace all standard spaces with non-breaking spaces (\u00A0)
-                            # This forces MS Word to treat the whole block as unbreakable, preventing wrapping.
                             ascii_art = '\n'.join(code_block_content).replace(' ', '\u00A0')
                             
                             run = p.add_run(ascii_art)
                             run.font.name = 'Courier New'
-                            run.font.size = Pt(7) # Kept small to fit on the page
+                            run.font.size = Pt(7)
                     continue
                 
                 if in_code_block:
@@ -319,12 +320,7 @@ class ExportManager:
 
     @staticmethod
     def generate_html_for_pdf(markdown_text):
-        """
-        Converts the markdown to a beautifully formatted HTML file.
-        Users can open this HTML in their browser and "Print to PDF".
-        """
         html_body = markdown.markdown(markdown_text, extensions=['tables', 'fenced_code'])
-        
         styled_html = f"""
         <!DOCTYPE html>
         <html>
@@ -342,24 +338,12 @@ class ExportManager:
                     margin: 0 auto;
                     padding: 20px;
                 }}
-                h1, h2, h3 {{
-                    text-align: center;
-                    color: #000;
-                }}
+                h1, h2, h3 {{ text-align: center; color: #000; }}
                 h1 {{ font-size: 24pt; margin-top: 2em; page-break-before: always; }}
                 h2 {{ font-size: 18pt; margin-top: 1.5em; }}
                 h3 {{ font-size: 14pt; margin-top: 1.2em; text-align: left; }}
-                table {{
-                    border-collapse: collapse;
-                    width: 100%;
-                    margin: 20px 0;
-                    font-size: 11pt;
-                }}
-                th, td {{
-                    border: 1px solid #000;
-                    padding: 8px;
-                    text-align: center;
-                }}
+                table {{ border-collapse: collapse; width: 100%; margin: 20px 0; font-size: 11pt; }}
+                th, td {{ border: 1px solid #000; padding: 8px; text-align: center; }}
                 th {{ background-color: #f2f2f2; font-weight: bold; }}
                 pre, code {{
                     font-family: 'Courier New', Courier, monospace;
@@ -468,22 +452,20 @@ def page_research_analysis():
             st.write(result)
 
 def page_thesis_generator():
-    st.title("Automated Thesis Generator (Extended Length)")
-    st.markdown("Select the detailed chapters to generate. This extended list is designed to push the thesis to maximum length.")
+    st.title("Automated Thesis Generator")
+    st.markdown("Select the chapters to generate. The AI has been instructed to generate **massive, highly expansive chapters**.")
     
     col1, col2 = st.columns(2)
     selected_chapters = []
     
     with col1:
-        if st.checkbox("Chapter 1: Introduction & Problem Formulation", value=True): selected_chapters.append("Chapter 1: Introduction and Problem Formulation")
-        if st.checkbox("Chapter 2: Comprehensive Literature Review", value=True): selected_chapters.append("Chapter 2: Comprehensive Literature Review")
-        if st.checkbox("Chapter 3: Theoretical Framework & Architecture", value=True): selected_chapters.append("Chapter 3: Theoretical Framework and System Architecture")
-        if st.checkbox("Chapter 4: Proposed Methodology & Algorithms", value=True): selected_chapters.append("Chapter 4: Proposed Methodology and Algorithmic Design")
+        if st.checkbox("Title Page & Abstract", value=True): selected_chapters.append("Abstract")
+        if st.checkbox("Chapter 1: Introduction", value=True): selected_chapters.append("Chapter 1: Introduction")
+        if st.checkbox("Chapter 2: Literature Review", value=True): selected_chapters.append("Chapter 2: Literature Review")
     with col2:
-        if st.checkbox("Chapter 5: Mathematical Modeling & Setup", value=True): selected_chapters.append("Chapter 5: Mathematical Modeling and Hardware/Software Setup")
-        if st.checkbox("Chapter 6: Experimental Results & Performance", value=True): selected_chapters.append("Chapter 6: Experimental Results and Performance Evaluation")
-        if st.checkbox("Chapter 7: Discussion & Comparative Analysis", value=True): selected_chapters.append("Chapter 7: Discussion, Limitations, and Comparative Analysis")
-        if st.checkbox("Chapter 8: Conclusion & Future Scope", value=True): selected_chapters.append("Chapter 8: Conclusion and Future Scope")
+        if st.checkbox("Chapter 3: Methodology", value=True): selected_chapters.append("Chapter 3: Methodology")
+        if st.checkbox("Chapter 4: Results & Discussion", value=True): selected_chapters.append("Chapter 4: Results and Discussion")
+        if st.checkbox("Chapter 5: Conclusion", value=True): selected_chapters.append("Chapter 5: Conclusion")
 
     if st.button("Generate Complete Thesis", type="primary"):
         if not st.session_state.vector_index:
@@ -494,33 +476,31 @@ def page_thesis_generator():
         generated_chapters = {}
         markdown_preview = ""
         
-        # Adding a warning so the user knows about the rate limit delays
-        st.warning("Note: Due to API rate limits, generation may automatically pause for 60 seconds between chapters if limits are hit. Please do not close the page.")
+        st.info("Note: The AI is instructed to generate massive amounts of text. If rate limits are hit, it will intelligently pause and resume.")
         
         for i, chapter in enumerate(selected_chapters):
-            # Slow down the loop artificially to help prevent hitting the 15 Requests/Min quota too fast
+            # Throttle initial requests slightly to avoid immediate spike bans
             if i > 0:
-                time.sleep(5) 
+                time.sleep(6) 
             
-            st.text(f"Drafting {chapter}... (Generating maximum length, this will take time)")
+            st.text(f"Drafting {chapter}... (Expanding content massively)")
             
             vdb = VectorDB()
             context_chunks = vdb.search(st.session_state.vector_index, st.session_state.text_chunks, chapter, k=20)
             context = "\n".join(context_chunks)
             
             prompt = (
-                f"Write '{chapter}' for a comprehensive academic thesis. "
+                f"Write the '{chapter}' chapter for a comprehensive academic thesis. "
                 "CRITICAL INSTRUCTIONS FOR LENGTH: This chapter MUST be extremely expansive, highly detailed, and exhaustive. "
-                "Write AT LEAST 1500 to 2500 words for this chapter alone to ensure the final compiled thesis reaches maximum length. "
-                "Break down the topic into multiple extensive sub-headings (e.g., 1.1, 1.2, 1.2.1). "
+                "Write AT LEAST 2500 to 4000 words for this chapter alone. "
+                "Break down the topic into multiple extensive sub-headings (e.g., 1.1, 1.2, 1.2.1) and elaborate heavily on every single point. "
                 "Where applicable, embed Markdown tables to organize the extracted data, parameters, or findings. "
                 "If describing algorithms, protocols, architectures, or system logic, explicitly generate a clear ASCII flowchart or diagram labeled as a Figure."
             )
             draft = RealLLM.generate(prompt, context)
             
-            # Check if the LLM hit the max retries limit and aborted
             if "Max retries exceeded" in draft:
-                st.error("Google Gemini API daily quota exhausted. Please try again tomorrow, or upgrade your Google AI Studio tier.")
+                st.error("Google Gemini API daily quota exhausted. Please try again tomorrow.")
                 break
             
             generated_chapters[chapter] = draft
@@ -538,7 +518,7 @@ def page_thesis_generator():
             st.download_button(
                 label="📥 Download as DOCX",
                 data=docx_file,
-                file_name="Extended_Research_Thesis.docx",
+                file_name="Massive_Research_Thesis.docx",
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 use_container_width=True
             )
@@ -549,7 +529,7 @@ def page_thesis_generator():
                 label="📥 Download as HTML (Print to PDF)",
                 help="Open this file in Chrome/Edge, right click, select Print, and 'Save as PDF'. This guarantees perfect formatting and tables.",
                 data=html_file,
-                file_name="Extended_Research_Thesis.html",
+                file_name="Massive_Research_Thesis.html",
                 mime="text/html",
                 use_container_width=True
             )
