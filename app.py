@@ -19,7 +19,7 @@ from sentence_transformers import SentenceTransformer
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from fpdf import FPDF
 import markdown
-from openai import OpenAI
+from google import genai
 
 # ==========================================
 # CONFIGURATION & PAGE SETUP
