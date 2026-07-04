@@ -19,4 +19,4 @@ Markdown
 Pillow
 docx2txt
 langchain-text-splitters
-openai
+google-genai
