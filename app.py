@@ -106,16 +106,17 @@ class VectorDB:
         return results
 
 class RealLLM:
-    """Connects to OpenAI API for Real Inference"""
+    """Connects to Google Gemini API for Free Tier Inference"""
     @staticmethod
     def generate(prompt, context=""):
         try:
             # Securely fetch the key from Streamlit's secrets
-            api_key = st.secrets.get("OPENAI_API_KEY")
+            api_key = st.secrets.get("GEMINI_API_KEY")
             if not api_key:
-                return "⚠️ Error: OPENAI_API_KEY is not set in Streamlit Secrets. Please configure it in your Streamlit Cloud dashboard."
+                return "⚠️ Error: GEMINI_API_KEY is not set in Streamlit Secrets. Please configure it in your Streamlit Cloud dashboard."
 
-            client = OpenAI(api_key=api_key)
+            # Initialize the Gemini client
+            client = genai.Client(api_key=api_key)
             
             system_instruction = (
                 "You are an expert academic researcher and thesis writer. "
@@ -125,17 +126,16 @@ class RealLLM:
             
             user_message = f"Context:\n{context}\n\nTask:\n{prompt}"
             
-            response = client.chat.completions.create(
-                model="gpt-4o", # Change to gpt-4-turbo or gpt-3.5-turbo if needed
-                messages=[
-                    {"role": "system", "content": system_instruction},
-                    {"role": "user", "content": user_message}
-                ],
-                temperature=0.3, # Low temperature for academic accuracy
-                max_tokens=4000  # Maximize output length per section
+            # Combine system instructions and user message for the Gemini model
+            full_prompt = f"System: {system_instruction}\n\nUser: {user_message}"
+            
+            # Generate content using the Gemini 2.5 Flash model
+            response = client.models.generate_content(
+                model='gemini-2.5-flash',
+                contents=full_prompt,
             )
             
-            return response.choices[0].message.content
+            return response.text
             
         except Exception as e:
             return f"⚠️ LLM Generation Error: {str(e)}"
@@ -520,7 +520,7 @@ def page_settings():
     with st.expander("AI & Output Settings", expanded=True):
         st.session_state.settings["citation_style"] = st.selectbox("Citation Style", ["IEEE", "APA", "MLA", "Chicago"], index=["IEEE", "APA", "MLA", "Chicago"].index(st.session_state.settings["citation_style"]))
         st.session_state.settings["internet_search"] = st.toggle("Enable Internet Search (Semantic Scholar / arXiv)", value=st.session_state.settings["internet_search"])
-        st.selectbox("LLM Provider", ["OpenAI (GPT-4o)", "Anthropic (Claude)", "Local Llama"])
+        st.selectbox("LLM Provider", ["Google Gemini (Free Tier)", "OpenAI", "Anthropic (Claude)"])
         st.caption("⚠️ Ensure your API Keys are securely added to `Streamlit Secrets` in your cloud dashboard.")
 
     if st.button("Save Settings"):
