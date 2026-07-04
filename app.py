@@ -123,7 +123,8 @@ class RealLLM:
                 "Use the provided context to generate comprehensive, highly detailed, "
                 "and academically rigorous content. Do not hallucinate citations. "
                 "CRITICAL: When relevant, you MUST synthesize numerical data, parameters, or comparisons into clean Markdown tables. "
-                "When illustrating system architectures, logic flows, or structural topologies, you MUST generate clear ASCII diagrams or flowcharts to serve as Figures."
+                "When illustrating system architectures or logic flows, you MUST generate clear ASCII diagrams. "
+                "IMPORTANT: Keep ASCII diagrams COMPACT and VERTICAL (maximum 65 characters wide) so they fit on a standard document page without text wrapping."
             )
             
             user_message = f"Context:\n{context}\n\nTask:\n{prompt}"
@@ -218,11 +219,6 @@ class DocumentProcessor:
 class ExportManager:
     @staticmethod
     def generate_docx(chapters_dict):
-        """
-        Takes a dictionary of { "Chapter Title": "Content" }
-        and builds a strictly formatted, academic DOCX file.
-        Includes Monospace formatting for ASCII flowcharts and native Word tables.
-        """
         doc = docx.Document()
         
         # --- GLOBAL DOCUMENT FORMATTING ---
@@ -249,24 +245,36 @@ class ExportManager:
             lines = content.split('\n')
             in_table = False
             table_data = []
+            
             in_code_block = False 
+            code_block_content = []
             
             for line in lines:
                 raw_line = line 
                 clean_line = line.strip()
                 
-                # FLOWCHART DETECTION
+                # FLOWCHART DETECTION & COMPILING
                 if clean_line.startswith('```'):
-                    in_code_block = not in_code_block
+                    if not in_code_block:
+                        in_code_block = True
+                        code_block_content = []
+                    else:
+                        in_code_block = False
+                        if code_block_content:
+                            p = doc.add_paragraph()
+                            p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+                            p.paragraph_format.space_before = Pt(0)
+                            p.paragraph_format.space_after = Pt(12)
+                            p.paragraph_format.line_spacing = 1.0 # Force lines together
+                            
+                            # Join the block and format as a single continuous run
+                            run = p.add_run('\n'.join(code_block_content))
+                            run.font.name = 'Courier New'
+                            run.font.size = Pt(7) # Prevent horizontal wrapping
                     continue
                 
-                # RENDER FLOWCHART (Monospace Font)
                 if in_code_block:
-                    p = doc.add_paragraph(raw_line)
-                    p.alignment = WD_ALIGN_PARAGRAPH.LEFT
-                    for run in p.runs:
-                        run.font.name = 'Courier New'
-                        run.font.size = Pt(10)
+                    code_block_content.append(raw_line)
                     continue
                 
                 # TABLE DETECTION
@@ -507,7 +515,6 @@ def page_thesis_generator():
             
         progress = st.progress(0)
         
-        # Store chapters in a dictionary for massive DOCX generator
         generated_chapters = {}
         chapters = ["Abstract", "Introduction", "Literature Review", "Methodology", "Results", "Conclusion"]
         markdown_preview = "# Generated Thesis Preview\n\n"
@@ -515,12 +522,10 @@ def page_thesis_generator():
         for i, chapter in enumerate(chapters):
             st.text(f"Drafting {chapter}... (This may take a few minutes)")
             
-            # 1. Retrieve specific context for this chapter
             vdb = VectorDB()
             context_chunks = vdb.search(st.session_state.vector_index, st.session_state.text_chunks, chapter, k=15)
             context = "\n".join(context_chunks)
             
-            # 2. Call the Real LLM with explicit structural directives
             prompt = (
                 f"Write the {chapter} chapter of a comprehensive academic thesis. "
                 "Ensure it is incredibly detailed, highly expansive, and academic in tone. "
@@ -529,7 +534,6 @@ def page_thesis_generator():
             )
             draft = RealLLM.generate(prompt, context)
             
-            # 3. Store the output
             generated_chapters[chapter] = draft
             markdown_preview += f"## {chapter}\n{draft}\n\n"
             progress.progress((i + 1) / len(chapters))
@@ -538,7 +542,6 @@ def page_thesis_generator():
         
         st.text_area("Review Thesis Draft", markdown_preview, height=400)
         
-        # Generate the massive DOCX file
         docx_file = ExportManager.generate_docx(generated_chapters)
         
         st.download_button(
@@ -564,7 +567,6 @@ def page_literature_review():
                 "Dataset": ["Dataset X", "Dataset Y"] * (len(st.session_state.docs) // 2 + 1),
                 "Key Finding": ["Improved accuracy", "Reduced latency"] * (len(st.session_state.docs) // 2 + 1),
             }
-            # Trim to match lengths
             for k in data:
                 data[k] = data[k][:len(st.session_state.docs)]
                 
@@ -596,7 +598,6 @@ def page_graphs():
         
         st.pyplot(fig)
         
-        # Save to buffer for download
         buf = io.BytesIO()
         fig.savefig(buf, format="png", dpi=300)
         st.download_button("Download Graph (PNG)", buf.getvalue(), "metrics_graph.png", "image/png")
