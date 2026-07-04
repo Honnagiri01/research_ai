@@ -221,47 +221,59 @@ class ExportManager:
         """
         Takes a dictionary of { "Chapter Title": "Content" }
         and builds a strictly formatted, academic DOCX file.
+        Includes Monospace formatting for ASCII flowcharts and native Word tables.
         """
         doc = docx.Document()
         
         # --- GLOBAL DOCUMENT FORMATTING ---
-        # Set default font to Times New Roman, 12pt
         style = doc.styles['Normal']
         font = style.font
         font.name = 'Times New Roman'
         font.size = Pt(12)
         
-        # Set academic 1-inch margins on all pages
         for section in doc.sections:
             section.top_margin = Inches(1)
             section.bottom_margin = Inches(1)
             section.left_margin = Inches(1)
             section.right_margin = Inches(1)
         
-        # --- TITLE PAGE ---
         title = doc.add_heading('Research Thesis', 0)
         title.alignment = WD_ALIGN_PARAGRAPH.CENTER
         doc.add_page_break()
         
         # --- CHAPTER PROCESSING ---
         for chapter_title, content in chapters_dict.items():
-            # Chapter Headers
             chap_head = doc.add_heading(chapter_title, level=1)
             chap_head.alignment = WD_ALIGN_PARAGRAPH.CENTER
             
             lines = content.split('\n')
             in_table = False
             table_data = []
+            in_code_block = False 
             
             for line in lines:
+                raw_line = line 
                 clean_line = line.strip()
+                
+                # FLOWCHART DETECTION
+                if clean_line.startswith('```'):
+                    in_code_block = not in_code_block
+                    continue
+                
+                # RENDER FLOWCHART (Monospace Font)
+                if in_code_block:
+                    p = doc.add_paragraph(raw_line)
+                    p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+                    for run in p.runs:
+                        run.font.name = 'Courier New'
+                        run.font.size = Pt(10)
+                    continue
                 
                 # TABLE DETECTION
                 if clean_line.startswith('|') and clean_line.endswith('|'):
                     in_table = True
                     row_cells = [cell.strip() for cell in clean_line.strip('|').split('|')]
                     
-                    # Skip markdown separator row
                     if all(all(c in '-: ' for c in cell) for cell in row_cells) and len(row_cells) > 0:
                         continue
                         
@@ -278,8 +290,6 @@ class ExportManager:
                             for c_idx in range(min(len(row_data), cols)):
                                 cell = word_table.cell(r_idx, c_idx)
                                 cell.text = row_data[c_idx]
-                                
-                                # Format cells: Center align, bold headers
                                 for paragraph in cell.paragraphs:
                                     paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
                                     if r_idx == 0:
@@ -289,7 +299,7 @@ class ExportManager:
                         in_table = False
                         table_data = []
                     
-                    # RENDER PARAGRAPHS & SUBHEADINGS
+                    # RENDER STANDARD PARAGRAPHS
                     if clean_line:
                         if clean_line.startswith('### '):
                             doc.add_heading(clean_line.replace('### ', '').replace('**', ''), level=3)
@@ -298,10 +308,9 @@ class ExportManager:
                         else:
                             para_text = clean_line.replace('**', '').replace('##', '').strip()
                             p = doc.add_paragraph(para_text)
-                            # Justify paragraphs like a real thesis
                             p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
             
-            # Catch trailing tables at the end of a chapter
+            # Catch trailing tables
             if in_table and table_data:
                 cols = len(table_data[0])
                 word_table = doc.add_table(rows=len(table_data), cols=cols)
