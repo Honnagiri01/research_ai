@@ -9,6 +9,8 @@ import io
 import fitz  # PyMuPDF
 import pdfplumber
 import docx
+from docx.shared import Pt, Inches
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 import pptx
 import openpyxl
 from PIL import Image
@@ -110,12 +112,10 @@ class RealLLM:
     @staticmethod
     def generate(prompt, context=""):
         try:
-            # Securely fetch the key from Streamlit's secrets
             api_key = st.secrets.get("GEMINI_API_KEY")
             if not api_key:
-                return "⚠️ Error: GEMINI_API_KEY is not set in Streamlit Secrets. Please configure it in your Streamlit Cloud dashboard."
+                return "⚠️ Error: GEMINI_API_KEY is not set in Streamlit Secrets."
 
-            # Initialize the Gemini client
             client = genai.Client(api_key=api_key)
             
             system_instruction = (
@@ -127,11 +127,8 @@ class RealLLM:
             )
             
             user_message = f"Context:\n{context}\n\nTask:\n{prompt}"
-            
-            # Combine system instructions and user message for the Gemini model
             full_prompt = f"System: {system_instruction}\n\nUser: {user_message}"
             
-            # Generate content using the Gemini 2.5 Flash model
             response = client.models.generate_content(
                 model='gemini-2.5-flash',
                 contents=full_prompt,
@@ -223,24 +220,104 @@ class ExportManager:
     def generate_docx(chapters_dict):
         """
         Takes a dictionary of { "Chapter Title": "Content" }
-        and builds a properly formatted DOCX file.
+        and builds a strictly formatted, academic DOCX file.
         """
         doc = docx.Document()
         
-        # Add a Title Page
+        # --- GLOBAL DOCUMENT FORMATTING ---
+        # Set default font to Times New Roman, 12pt
+        style = doc.styles['Normal']
+        font = style.font
+        font.name = 'Times New Roman'
+        font.size = Pt(12)
+        
+        # Set academic 1-inch margins on all pages
+        for section in doc.sections:
+            section.top_margin = Inches(1)
+            section.bottom_margin = Inches(1)
+            section.left_margin = Inches(1)
+            section.right_margin = Inches(1)
+        
+        # --- TITLE PAGE ---
         title = doc.add_heading('Research Thesis', 0)
-        title.alignment = 1 # Center align
+        title.alignment = WD_ALIGN_PARAGRAPH.CENTER
         doc.add_page_break()
         
-        # Stitch all generated chapters
+        # --- CHAPTER PROCESSING ---
         for chapter_title, content in chapters_dict.items():
-            doc.add_heading(chapter_title, level=1)
+            # Chapter Headers
+            chap_head = doc.add_heading(chapter_title, level=1)
+            chap_head.alignment = WD_ALIGN_PARAGRAPH.CENTER
             
-            # Keep markdown layout structures intact but adjust styling syntax where necessary
-            clean_content = content.replace('**', '').replace('##', '')
+            lines = content.split('\n')
+            in_table = False
+            table_data = []
             
-            doc.add_paragraph(clean_content)
-            doc.add_page_break() # Ensure each chapter starts on a new page
+            for line in lines:
+                clean_line = line.strip()
+                
+                # TABLE DETECTION
+                if clean_line.startswith('|') and clean_line.endswith('|'):
+                    in_table = True
+                    row_cells = [cell.strip() for cell in clean_line.strip('|').split('|')]
+                    
+                    # Skip markdown separator row
+                    if all(all(c in '-: ' for c in cell) for cell in row_cells) and len(row_cells) > 0:
+                        continue
+                        
+                    table_data.append(row_cells)
+                else:
+                    # RENDER TABLE
+                    if in_table and table_data:
+                        cols = len(table_data[0])
+                        word_table = doc.add_table(rows=len(table_data), cols=cols)
+                        word_table.style = 'Table Grid'
+                        word_table.autofit = True
+                        
+                        for r_idx, row_data in enumerate(table_data):
+                            for c_idx in range(min(len(row_data), cols)):
+                                cell = word_table.cell(r_idx, c_idx)
+                                cell.text = row_data[c_idx]
+                                
+                                # Format cells: Center align, bold headers
+                                for paragraph in cell.paragraphs:
+                                    paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                                    if r_idx == 0:
+                                        for run in paragraph.runs:
+                                            run.font.bold = True
+                        
+                        in_table = False
+                        table_data = []
+                    
+                    # RENDER PARAGRAPHS & SUBHEADINGS
+                    if clean_line:
+                        if clean_line.startswith('### '):
+                            doc.add_heading(clean_line.replace('### ', '').replace('**', ''), level=3)
+                        elif clean_line.startswith('## '):
+                            doc.add_heading(clean_line.replace('## ', '').replace('**', ''), level=2)
+                        else:
+                            para_text = clean_line.replace('**', '').replace('##', '').strip()
+                            p = doc.add_paragraph(para_text)
+                            # Justify paragraphs like a real thesis
+                            p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+            
+            # Catch trailing tables at the end of a chapter
+            if in_table and table_data:
+                cols = len(table_data[0])
+                word_table = doc.add_table(rows=len(table_data), cols=cols)
+                word_table.style = 'Table Grid'
+                word_table.autofit = True
+                for r_idx, row_data in enumerate(table_data):
+                    for c_idx in range(min(len(row_data), cols)):
+                        cell = word_table.cell(r_idx, c_idx)
+                        cell.text = row_data[c_idx]
+                        for paragraph in cell.paragraphs:
+                            paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                            if r_idx == 0:
+                                for run in paragraph.runs:
+                                    run.font.bold = True
+                                    
+            doc.add_page_break() 
             
         io_stream = io.BytesIO()
         doc.save(io_stream)
